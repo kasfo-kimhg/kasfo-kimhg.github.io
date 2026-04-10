@@ -163,6 +163,7 @@
     #sync-pin-display {
       font-size: 3rem; letter-spacing: 5px; color: #1f2937;
       background: #f3f4f6; padding: 10px; border-radius: 8px; margin: 20px 0;
+      min-height: 70px; display: flex; justify-content: center; align-items: center;
     }
     .sync-input {
       font-size: 2rem; width: 100%; text-align: center;
@@ -192,7 +193,6 @@
   <div class="ad-container">
     <div>
       구글 광고 영역 (가로형)<br>(728x90 등)<br>
-      <!-- 애드센스 코드 자리 -->
     </div>
   </div>
 
@@ -232,7 +232,8 @@
 
       <div id="sync-host-ui" style="display: none;">
         <p>휴대폰에서 연동 버튼을 누르고<br>아래 6자리 코드를 입력하세요.</p>
-        <div id="sync-pin-display">------</div>
+        <!-- 발급 중 상태를 명확히 보여주는 영역 -->
+        <div id="sync-pin-display" style="font-size: 1.2rem; letter-spacing: normal; color: #4b5563;">통신망 연결 중...</div>
         <p style="font-size: 0.9rem; color: #2563eb; font-weight: bold;">연결 대기 중...</p>
       </div>
 
@@ -272,11 +273,10 @@
     let isHost = false;
     let isRemote = false;
     let currentPin = '';
-    const APP_PREFIX = 'my-web-timer-v3-'; 
+    const APP_PREFIX = 'my-web-timer-v4-'; 
 
-    // 🔥 LTE/5G 환경 통신사 방화벽 통과를 위한 공용 TURN/STUN 서버 완벽 탑재
+    // 🔥 LTE/5G 환경 통신사 방화벽 통과를 위한 공용 TURN/STUN 서버
     const PEER_OPTIONS = {
-      debug: 1,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -573,7 +573,7 @@
     });
 
     // ----------------------------------------------------
-    // 실시간 동기화 (P2P / PeerJS 로직 + TURN 서버)
+    // 실시간 동기화 (P2P / PeerJS 로직 + TURN 서버 + 안정성 보강)
     // ----------------------------------------------------
     window.openSyncModal = () => {
       clearFocus();
@@ -618,13 +618,31 @@
       
       document.getElementById('sync-options').style.display = 'none';
       document.getElementById('sync-host-ui').style.display = 'block';
-      document.getElementById('sync-pin-display').innerText = currentPin;
       
-      // 🔥 STUN/TURN 옵션 탑재
+      // 🔥 연결 검증 UI: 서버에 방이 파지기 전까지는 번호를 띄우지 않음!
+      const pinDisplay = document.getElementById('sync-pin-display');
+      pinDisplay.style.fontSize = "1.2rem";
+      pinDisplay.style.letterSpacing = "normal";
+      pinDisplay.style.color = "#4b5563";
+      pinDisplay.innerText = "통신망 연결 중...";
+      
       peer = new Peer(APP_PREFIX + currentPin, PEER_OPTIONS);
 
+      // 🔥 가장 중요: 이 이벤트가 터져야 비로소 서버에 코드가 등록된 것!
       peer.on('open', (id) => {
         isHost = true; isRemote = false;
+        pinDisplay.style.fontSize = "3rem";
+        pinDisplay.style.letterSpacing = "5px";
+        pinDisplay.style.color = "#1f2937";
+        pinDisplay.innerText = currentPin; // 연결 확인 후 진짜 핀 노출
+      });
+
+      // 브라우저 유휴 상태로 신호 끊길 시 복구 로직
+      peer.on('disconnected', () => {
+        if (isHost && !peer.destroyed) {
+          console.log("통신 서버와 끊김, 재접속 시도...");
+          peer.reconnect();
+        }
       });
 
       peer.on('connection', (connection) => {
@@ -659,9 +677,12 @@
       });
 
       peer.on('error', (err) => {
-        if(err.type === 'unavailable-id') window.createHostSession();
-        else {
-          showToast("네트워크 오류가 발생했습니다. (" + err.type + ")");
+        if(err.type === 'unavailable-id') {
+           // 아이디 중복 시 재귀출력
+           window.createHostSession();
+        } else {
+          pinDisplay.innerText = "오류 발생";
+          showToast("네트워크 방화벽에 의해 차단되었습니다.");
           console.error(err);
         }
       });
@@ -677,14 +698,11 @@
 
       if (peer) { peer.destroy(); }
       
-      // 🔥 STUN/TURN 옵션 탑재
       peer = new Peer(PEER_OPTIONS);
 
       peer.on('open', () => {
-        // 상대방에게 연결 시도
         conn = peer.connect(APP_PREFIX + pin, { reliable: true });
 
-        // 🔥 무한 로딩 방지 10초 타임아웃
         const connectTimeout = setTimeout(() => {
           if (!isRemote) {
             btn.innerText = "연결하기";
@@ -735,6 +753,7 @@
       peer.on('error', (err) => {
         btn.innerText = "연결하기";
         btn.disabled = false;
+        
         if (err.type === 'peer-unavailable') {
           showToast("존재하지 않거나 만료된 코드입니다.");
         } else {
