@@ -173,6 +173,12 @@
     .sync-input:focus { border-color: #3b82f6; }
     .close-btn { background-color: #f3f4f6; color: #4b5563; border: none; width: 100%; margin-top: 10px; }
 
+    #debug-console {
+      margin-top: 15px; padding: 10px; background: #1f2937; color: #10b981;
+      font-size: 0.75rem; text-align: left; border-radius: 8px;
+      height: 150px; overflow-y: auto; display: none; font-family: monospace; word-break: break-all;
+    }
+
     #toast {
       position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,0.8); color: white; padding: 12px 24px;
@@ -248,6 +254,9 @@
         <button class="sync-opt-btn" style="background-color: #ef4444; color: white; border-color: #dc2626;" onclick="disconnectSync()">연결 해제하기</button>
       </div>
 
+      <button onclick="toggleDebug()" style="background:none; border:none; color:#9ca3af; font-size:0.8rem; margin-top:10px; cursor:pointer; text-decoration:underline;">디버그(오류 분석) 로그 보기</button>
+      <div id="debug-console"></div>
+
       <button class="close-btn" onclick="closeSyncModal()">취소 및 닫기</button>
     </div>
   </div>
@@ -275,8 +284,22 @@
     let currentPin = '';
     const APP_PREFIX = 'my-web-timer-v4-'; 
 
+    function toggleDebug() {
+      const dc = document.getElementById('debug-console');
+      dc.style.display = dc.style.display === 'block' ? 'none' : 'block';
+    }
+
+    function writeDebug(msg) {
+      console.log(msg);
+      const dc = document.getElementById('debug-console');
+      const time = new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'});
+      dc.innerHTML += `<div>[${time}] ${msg}</div>`;
+      dc.scrollTop = dc.scrollHeight; // 항상 최신 로그(맨 아래)로 스크롤
+    }
+
     // 🔥 LTE/5G 환경 통신사 방화벽 통과를 위한 공용 TURN/STUN 서버
     const PEER_OPTIONS = {
+      debug: 3, // PeerJS 내부 경고 로그까지 모두 출력
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -613,7 +636,8 @@
     };
 
     window.createHostSession = () => {
-      if (peer) { peer.destroy(); }
+      writeDebug("호스트 세션 생성 시작");
+      if (peer) { peer.destroy(); writeDebug("기존 peer 파괴됨"); }
       currentPin = String(Math.floor(100000 + Math.random() * 900000));
       
       document.getElementById('sync-options').style.display = 'none';
@@ -626,10 +650,12 @@
       pinDisplay.style.color = "#4b5563";
       pinDisplay.innerText = "통신망 연결 중...";
       
+      writeDebug(`PeerJS 초기화 시도: ${currentPin}`);
       peer = new Peer(APP_PREFIX + currentPin, PEER_OPTIONS);
 
       // 🔥 가장 중요: 이 이벤트가 터져야 비로소 서버에 코드가 등록된 것!
       peer.on('open', (id) => {
+        writeDebug(`PeerJS 서버 접속 성공. 내 ID: ${id}`);
         isHost = true; isRemote = false;
         pinDisplay.style.fontSize = "3rem";
         pinDisplay.style.letterSpacing = "5px";
@@ -639,16 +665,20 @@
 
       // 브라우저 유휴 상태로 신호 끊길 시 복구 로직
       peer.on('disconnected', () => {
+        writeDebug("PeerJS 서버와 통신 끊김 (disconnected)");
         if (isHost && !peer.destroyed) {
           console.log("통신 서버와 끊김, 재접속 시도...");
+          writeDebug("서버 재접속(reconnect) 시도 중...");
           peer.reconnect();
         }
       });
 
       peer.on('connection', (connection) => {
+        writeDebug(`리모컨 연결 요청 들어옴. (Peer: ${connection.peer})`);
         conn = connection;
 
         conn.on('open', () => {
+          writeDebug("리모컨과 직통 터널(데이터 채널) 열림 성공!");
           window.closeSyncModal();
           const banner = document.getElementById('status-banner');
           banner.innerText = "📱 모바일 리모컨이 연결되었습니다!";
@@ -659,6 +689,7 @@
         });
 
         conn.on('data', (data) => {
+          writeDebug(`리모컨 명령 수신: ${data.action}`);
           if (data.type === 'command') {
             if (editInput.style.display === 'block') { window.applyEditMode(); }
             switch(data.action) {
@@ -671,14 +702,17 @@
         });
 
         conn.on('close', () => {
+          writeDebug("리모컨 연결이 종료됨");
           showToast("리모컨 연결이 끊어졌습니다.");
           conn = null;
         });
       });
 
       peer.on('error', (err) => {
+        writeDebug(`[에러] ${err.type} - ${err.message}`);
         if(err.type === 'unavailable-id') {
            // 아이디 중복 시 재귀출력
+           writeDebug("코드 중복, 재발급 시도...");
            window.createHostSession();
         } else {
           pinDisplay.innerText = "오류 발생";
@@ -696,15 +730,21 @@
       btn.innerText = "연결 중...";
       btn.disabled = true;
 
-      if (peer) { peer.destroy(); }
+      writeDebug(`리모컨 연결 시작. 입력된 핀: ${pin}`);
+
+      if (peer) { peer.destroy(); writeDebug("기존 peer 초기화"); }
       
+      writeDebug("리모컨 PeerJS 초기화 중...");
       peer = new Peer(PEER_OPTIONS);
 
-      peer.on('open', () => {
+      peer.on('open', (id) => {
+        writeDebug(`리모컨 PeerJS 서버 접속 성공. 내 ID: ${id}`);
+        writeDebug(`호스트(PC) 연결 시도 중...`);
         conn = peer.connect(APP_PREFIX + pin, { reliable: true });
 
         const connectTimeout = setTimeout(() => {
           if (!isRemote) {
+            writeDebug("10초 경과: P2P 직통 연결(WebRTC) 방화벽 돌파 실패!");
             btn.innerText = "연결하기";
             btn.disabled = false;
             showToast("연결 시간 초과! 모바일 데이터 연결을 확인하세요.");
@@ -714,6 +754,7 @@
         }, 10000);
 
         conn.on('open', () => {
+          writeDebug("PC와 직통 터널(데이터 채널) 열림 성공!");
           clearTimeout(connectTimeout);
           isHost = false; isRemote = true; currentPin = pin;
           window.closeSyncModal();
@@ -745,12 +786,14 @@
         });
 
         conn.on('close', () => {
+          writeDebug("PC와의 연결이 종료됨");
           showToast("PC와의 연결이 끊어졌습니다.");
           setTimeout(() => window.location.reload(), 1500); 
         });
       });
 
       peer.on('error', (err) => {
+        writeDebug(`[에러] ${err.type} - ${err.message}`);
         btn.innerText = "연결하기";
         btn.disabled = false;
         
@@ -764,6 +807,7 @@
 
     function syncHostState() {
       if (!isHost || !conn) return;
+      writeDebug("리모컨으로 현재 상태(State) 전송");
       const relativeTarget = targetTime ? targetTime - performance.now() : null;
       conn.send({
         type: 'state',
@@ -776,6 +820,7 @@
 
     function sendRemoteCommand(action, payload = null) {
       if (!isRemote || !conn) return;
+      writeDebug(`PC로 제어 명령(Command) 전송: ${action}`);
       conn.send({ type: 'command', action, payload });
       if (navigator.vibrate) navigator.vibrate(50);
     }
