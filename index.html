@@ -268,17 +268,28 @@
     let animationFrameId = null;
     let isRunning = false;
     let timeLeftMs = 0;
-    let hasTriggeredZero = false; // 0초 도달 시 1회만 알람을 울리기 위한 플래그
+    let hasTriggeredZero = false; 
     
     let wakeLock = null;
 
-    // P2P 연동 (PeerJS)
+    // P2P 연동 (PeerJS) 변수 설정
     let peer = null;
     let conn = null;
     let isHost = false;
     let isRemote = false;
     let currentPin = '';
     const APP_PREFIX = 'my-web-timer-v1-'; 
+
+    // 🔥 구글 STUN 서버 설정 (방화벽 통과 확률 상승)
+    const PEER_OPTIONS = {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      }
+    };
 
     function clearFocus() {
       if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
@@ -307,7 +318,7 @@
     }
 
     // ----------------------------------------------------
-    // 정각 알람(Beep) 기능 탑재 (외부 오디오 파일 불필요)
+    // 정각 알람(Beep) 기능 탑재
     // ----------------------------------------------------
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null;
@@ -348,14 +359,12 @@
     `], { type: 'application/javascript' });
     const timerWorker = new Worker(URL.createObjectURL(workerBlob));
 
-    // 워커가 0.1초마다 보내는 신호를 받아 백그라운드에서도 정확한 0초 감지
     timerWorker.onmessage = function(e) {
       if (e.data === 'tick' && isRunning && targetTime) {
-        // 🔥 절대 시간인 performance.now() 사용
         const diff = targetTime - performance.now();
         if (diff <= 0 && !hasTriggeredZero) {
-          hasTriggeredZero = true; // 중복 울림 방지
-          playBeep(); // 0초 도달 시 즉각 알람
+          hasTriggeredZero = true; 
+          playBeep(); 
         }
       }
     };
@@ -375,7 +384,6 @@
     function updateDisplay() {
       if (!isRunning) return;
 
-      // 🔥 성능과 정확성을 보장하는 고해상도 타이머 사용
       const diff = targetTime - performance.now();
       timeLeftMs = diff;
       display.innerText = formatTime(diff);
@@ -400,7 +408,6 @@
     // ----------------------------------------------------
     window.startTimer = function() {
       clearFocus();
-      // 브라우저 오디오 권한 획득을 위해 첫 클릭 시 컨텍스트 초기화
       if (!audioCtx) audioCtx = new AudioContext();
       if (audioCtx.state === 'suspended') audioCtx.resume();
 
@@ -408,14 +415,13 @@
       if (isRemote) { sendRemoteCommand('start'); return; }
 
       isRunning = true;
-      if (timeLeftMs > 0) hasTriggeredZero = false; // 0초 초과 상태일때만 알람 리셋
+      if (timeLeftMs > 0) hasTriggeredZero = false; 
       
       presetContainer.style.visibility = 'hidden';
-      // 🔥 절대 시간 설정
       targetTime = performance.now() + timeLeftMs;
       
       requestWakeLock();
-      timerWorker.postMessage('start'); // 워커 시작
+      timerWorker.postMessage('start'); 
       animationFrameId = requestAnimationFrame(updateDisplay);
       
       if (isHost) syncHostState();
@@ -428,7 +434,7 @@
 
       isRunning = false;
       cancelAnimationFrame(animationFrameId);
-      timerWorker.postMessage('stop'); // 워커 중지
+      timerWorker.postMessage('stop'); 
       releaseWakeLock(); 
       
       if (isHost) syncHostState();
@@ -614,7 +620,8 @@
       document.getElementById('sync-host-ui').style.display = 'block';
       document.getElementById('sync-pin-display').innerText = currentPin;
       
-      peer = new Peer(APP_PREFIX + currentPin);
+      // 🔥 STUN 옵션 탑재하여 Peer 생성
+      peer = new Peer(APP_PREFIX + currentPin, PEER_OPTIONS);
 
       peer.on('open', (id) => {
         isHost = true; isRemote = false;
@@ -667,12 +674,26 @@
       btn.disabled = true;
 
       if (peer) { peer.destroy(); }
-      peer = new Peer();
+      
+      // 🔥 STUN 옵션 탑재하여 Peer 생성
+      peer = new Peer(PEER_OPTIONS);
 
       peer.on('open', () => {
         conn = peer.connect(APP_PREFIX + pin);
 
+        // 🔥 7초 타임아웃 락 (무한 로딩 방지)
+        const connectTimeout = setTimeout(() => {
+          if (!isRemote) {
+            btn.innerText = "연결하기";
+            btn.disabled = false;
+            showToast("연결 시간 초과! (인터넷 상태 및 HTTPS 환경 확인)");
+            if (conn) conn.close();
+            if (peer) peer.destroy();
+          }
+        }, 7000);
+
         conn.on('open', () => {
+          clearTimeout(connectTimeout);
           isHost = false; isRemote = true; currentPin = pin;
           window.closeSyncModal();
           
@@ -690,8 +711,6 @@
             timeLeftMs = data.timeLeftMs;
 
             if (isRunning) {
-              // 🔥 상대 시간(relativeTarget)을 전송받아 자신의 performance.now()와 결합!
-              // 기기 간의 시간이 전혀 달라도 완벽하게 동일한 시간을 표시합니다.
               targetTime = performance.now() + data.relativeTarget;
               if (!animationFrameId) animationFrameId = requestAnimationFrame(updateDisplay);
             } else {
@@ -714,13 +733,17 @@
       peer.on('error', (err) => {
         btn.innerText = "연결하기";
         btn.disabled = false;
-        showToast("연결 실패! 코드를 다시 확인하세요.");
+        
+        if (err.type === 'peer-unavailable') {
+          showToast("존재하지 않거나 만료된 코드입니다.");
+        } else {
+          showToast("연결 실패! (" + err.type + ")");
+        }
       });
     };
 
     function syncHostState() {
       if (!isHost || !conn) return;
-      // 절대 시간이 아닌, '얼마나 남았는가'의 순수 차이값만 전송
       const relativeTarget = targetTime ? targetTime - performance.now() : null;
       conn.send({
         type: 'state',
