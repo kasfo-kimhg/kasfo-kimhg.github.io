@@ -238,7 +238,6 @@
 
       <div id="sync-host-ui" style="display: none;">
         <p>휴대폰에서 연동 버튼을 누르고<br>아래 6자리 코드를 입력하세요.</p>
-        <!-- 발급 중 상태를 명확히 보여주는 영역 -->
         <div id="sync-pin-display" style="font-size: 1.2rem; letter-spacing: normal; color: #4b5563;">통신망 연결 중...</div>
         <p style="font-size: 0.9rem; color: #2563eb; font-weight: bold;">연결 대기 중...</p>
       </div>
@@ -276,13 +275,12 @@
     let hasTriggeredZero = false; 
     let wakeLock = null;
 
-    // P2P 연동 (PeerJS) 변수 설정
     let peer = null;
     let conn = null;
     let isHost = false;
     let isRemote = false;
     let currentPin = '';
-    const APP_PREFIX = 'my-web-timer-v4-'; 
+    const APP_PREFIX = 'my-web-timer-v5-'; 
 
     function toggleDebug() {
       const dc = document.getElementById('debug-console');
@@ -294,31 +292,38 @@
       const dc = document.getElementById('debug-console');
       const time = new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'});
       dc.innerHTML += `<div>[${time}] ${msg}</div>`;
-      dc.scrollTop = dc.scrollHeight; // 항상 최신 로그(맨 아래)로 스크롤
+      dc.scrollTop = dc.scrollHeight; 
     }
 
-    // 🔥 LTE/5G 환경 통신사 방화벽 통과를 위한 공용 TURN/STUN 서버
+    // 🔥 회원님이 직접 찾아주신 Metered.ca의 정확한 턴 서버 설정값을 그대로 적용했습니다!
     const PEER_OPTIONS = {
-      debug: 3, // PeerJS 내부 경고 로그까지 모두 출력
+      debug: 3,
       config: {
         iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
           {
-            urls: "turn:openrelay.metered.ca:80",
-            username: "openrelayproject",
-            credential: "openrelayproject"
+            urls: "stun:stun.relay.metered.ca:80",
           },
           {
-            urls: "turn:openrelay.metered.ca:443",
-            username: "openrelayproject",
-            credential: "openrelayproject"
+            urls: "turn:global.relay.metered.ca:80",
+            username: "620688eec7bf7e1a1128a660",
+            credential: "XXAt6w2CxSlUItjD",
           },
           {
-            urls: "turn:openrelay.metered.ca:443?transport=tcp",
-            username: "openrelayproject",
-            credential: "openrelayproject"
-          }
+            urls: "turn:global.relay.metered.ca:80?transport=tcp",
+            username: "620688eec7bf7e1a1128a660",
+            credential: "XXAt6w2CxSlUItjD",
+          },
+          {
+            urls: "turn:global.relay.metered.ca:443",
+            username: "620688eec7bf7e1a1128a660",
+            credential: "XXAt6w2CxSlUItjD",
+          },
+          {
+            urls: "turns:global.relay.metered.ca:443?transport=tcp",
+            username: "620688eec7bf7e1a1128a660",
+            credential: "XXAt6w2CxSlUItjD",
+          },
+          { urls: 'stun:stun.l.google.com:19302' } // 보조용 구글 STUN
         ]
       }
     };
@@ -341,7 +346,7 @@
         if ('wakeLock' in navigator && !wakeLock) {
           wakeLock = await navigator.wakeLock.request('screen');
         }
-      } catch (err) { console.warn('Wake Lock error:', err); }
+      } catch (err) {}
     }
     function releaseWakeLock() {
       if (wakeLock !== null) {
@@ -412,7 +417,6 @@
 
     function updateDisplay() {
       if (!isRunning) return;
-
       const diff = targetTime - performance.now();
       timeLeftMs = diff;
       display.innerText = formatTime(diff);
@@ -420,14 +424,11 @@
       const isOvertime = diff < 0;
       const displaySeconds = isOvertime ? Math.floor(Math.abs(diff) / 1000) : Math.ceil(diff / 1000);
 
-      if (isOvertime && displaySeconds > 0) {
-        display.style.color = 'rgb(0, 0, 255)';
-      } else if (!isOvertime && displaySeconds > 0 && displaySeconds <= 5) {
+      if (isOvertime && displaySeconds > 0) display.style.color = 'rgb(0, 0, 255)';
+      else if (!isOvertime && displaySeconds > 0 && displaySeconds <= 5) {
         const redValue = 255 - ((displaySeconds - 1) * 51);
         display.style.color = `rgb(${redValue}, 0, 0)`;
-      } else {
-        display.style.color = 'rgb(0, 0, 0)';
-      }
+      } else display.style.color = 'rgb(0, 0, 0)';
 
       animationFrameId = requestAnimationFrame(updateDisplay);
     }
@@ -462,7 +463,6 @@
       cancelAnimationFrame(animationFrameId);
       timerWorker.postMessage('stop'); 
       releaseWakeLock(); 
-      
       if (isHost) syncHostState();
     };
 
@@ -478,14 +478,12 @@
       editInput.style.display = 'none';
       display.style.display = 'block';
       presetContainer.style.visibility = 'visible';
-      
       if (isHost) syncHostState();
     };
 
     window.setAndStart = function(seconds) {
       clearFocus();
       if (isRemote) { sendRemoteCommand('setAndStart', seconds); return; }
-
       window.stopTimer();
       timeLeftMs = seconds * 1000;
       display.innerText = formatTime(timeLeftMs);
@@ -554,9 +552,7 @@
     window.toggleFullScreen = function() {
       clearFocus();
       if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().then(() => {
-          if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock(['Escape']).catch(()=>{});
-        }).catch(()=>{});
+        document.documentElement.requestFullscreen().catch(()=>{});
       } else {
         if (document.exitFullscreen) document.exitFullscreen();
       }
@@ -576,9 +572,7 @@
         if (document.fullscreenElement) {
           if (isRunning) window.resetTimer();
           else { window.resetTimer(); if(document.exitFullscreen) document.exitFullscreen(); }
-        } else {
-          window.resetTimer();
-        }
+        } else window.resetTimer();
         return;
       }
       
@@ -596,7 +590,7 @@
     });
 
     // ----------------------------------------------------
-    // 실시간 동기화 (P2P / PeerJS 로직 + TURN 서버 + 안정성 보강)
+    // 실시간 동기화 (P2P / PeerJS 로직)
     // ----------------------------------------------------
     window.openSyncModal = () => {
       clearFocus();
@@ -643,7 +637,6 @@
       document.getElementById('sync-options').style.display = 'none';
       document.getElementById('sync-host-ui').style.display = 'block';
       
-      // 🔥 연결 검증 UI: 서버에 방이 파지기 전까지는 번호를 띄우지 않음!
       const pinDisplay = document.getElementById('sync-pin-display');
       pinDisplay.style.fontSize = "1.2rem";
       pinDisplay.style.letterSpacing = "normal";
@@ -653,21 +646,18 @@
       writeDebug(`PeerJS 초기화 시도: ${currentPin}`);
       peer = new Peer(APP_PREFIX + currentPin, PEER_OPTIONS);
 
-      // 🔥 가장 중요: 이 이벤트가 터져야 비로소 서버에 코드가 등록된 것!
       peer.on('open', (id) => {
         writeDebug(`PeerJS 서버 접속 성공. 내 ID: ${id}`);
         isHost = true; isRemote = false;
         pinDisplay.style.fontSize = "3rem";
         pinDisplay.style.letterSpacing = "5px";
         pinDisplay.style.color = "#1f2937";
-        pinDisplay.innerText = currentPin; // 연결 확인 후 진짜 핀 노출
+        pinDisplay.innerText = currentPin;
       });
 
-      // 브라우저 유휴 상태로 신호 끊길 시 복구 로직
       peer.on('disconnected', () => {
         writeDebug("PeerJS 서버와 통신 끊김 (disconnected)");
         if (isHost && !peer.destroyed) {
-          console.log("통신 서버와 끊김, 재접속 시도...");
           writeDebug("서버 재접속(reconnect) 시도 중...");
           peer.reconnect();
         }
@@ -711,13 +701,11 @@
       peer.on('error', (err) => {
         writeDebug(`[에러] ${err.type} - ${err.message}`);
         if(err.type === 'unavailable-id') {
-           // 아이디 중복 시 재귀출력
            writeDebug("코드 중복, 재발급 시도...");
            window.createHostSession();
         } else {
           pinDisplay.innerText = "오류 발생";
           showToast("네트워크 방화벽에 의해 차단되었습니다.");
-          console.error(err);
         }
       });
     };
@@ -747,7 +735,7 @@
             writeDebug("10초 경과: P2P 직통 연결(WebRTC) 방화벽 돌파 실패!");
             btn.innerText = "연결하기";
             btn.disabled = false;
-            showToast("연결 시간 초과! 모바일 데이터 연결을 확인하세요.");
+            showToast("연결 시간 초과! (개인 TURN 서버를 등록했는지 확인하세요.)");
             if (conn) conn.close();
             if (peer) peer.destroy();
           }
