@@ -6,8 +6,8 @@
   <title>디지털 타이머</title>
   <!-- 디지털 시계 폰트 불러오기 -->
   <link href="https://fonts.cdnfonts.com/css/digital-7-mono" rel="stylesheet">
-  <!-- 🚀 방화벽을 100% 통과하는 공용 웹소켓 통신 라이브러리 (MQTT) -->
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- P2P 통신용 PeerJS -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
     /* 전체 페이지 및 리셋 */
     * { box-sizing: border-box; }
@@ -192,12 +192,7 @@
   <div class="ad-container">
     <div>
       구글 광고 영역 (가로형)<br>(728x90 등)<br>
-      <!-- 
-        ★ 여기에 구글 애드센스 코드를 붙여넣으세요 ★ 
-        <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXX" crossorigin="anonymous"></script>
-        <ins class="adsbygoogle" style="display:inline-block;width:728px;height:90px" data-ad-client="ca-pub-XXXXXXXXXX" data-ad-slot="XXXXXXX"></ins>
-        <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
-      -->
+      <!-- 애드센스 코드 자리 -->
     </div>
   </div>
 
@@ -271,15 +266,39 @@
     let hasTriggeredZero = false; 
     let wakeLock = null;
 
-    // 🔥 MQTT 웹소켓 연동 변수
-    let mqttClient = null;
+    // P2P 연동 (PeerJS) 변수 설정
+    let peer = null;
+    let conn = null;
     let isHost = false;
     let isRemote = false;
     let currentPin = '';
-    
-    // 글로벌 무료 MQTT 브로커 주소 (방화벽 100% 통과)
-    const MQTT_BROKER = 'wss://broker.emqx.io:8084/mqtt';
-    const TOPIC_PREFIX = 'my-web-timer-v2-unique-'; 
+    const APP_PREFIX = 'my-web-timer-v3-'; 
+
+    // 🔥 LTE/5G 환경 통신사 방화벽 통과를 위한 공용 TURN/STUN 서버 완벽 탑재
+    const PEER_OPTIONS = {
+      debug: 1,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: "turn:openrelay.metered.ca:80",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+          },
+          {
+            urls: "turn:openrelay.metered.ca:443",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+          },
+          {
+            urls: "turn:openrelay.metered.ca:443?transport=tcp",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+          }
+        ]
+      }
+    };
 
     function clearFocus() {
       if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
@@ -308,7 +327,7 @@
     }
 
     // ----------------------------------------------------
-    // 정각 알람(Beep) 기능 탑재
+    // 정각 알람(Beep)
     // ----------------------------------------------------
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null;
@@ -324,7 +343,7 @@
       gainNode.connect(audioCtx.destination);
       
       oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5 음
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
       
       gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
@@ -334,7 +353,7 @@
     }
 
     // ----------------------------------------------------
-    // 백그라운드 잠들기 방지용 Web Worker 생성
+    // 백그라운드 잠들기 방지용 Web Worker
     // ----------------------------------------------------
     const workerBlob = new Blob([`
       let interval = null;
@@ -359,9 +378,6 @@
       }
     };
 
-    // ----------------------------------------------------
-    // 타이머 렌더링 로직
-    // ----------------------------------------------------
     function formatTime(diffMs) {
       const isOvertime = diffMs < 0;
       let displaySeconds = isOvertime ? Math.floor(Math.abs(diffMs) / 1000) : Math.ceil(diffMs / 1000);
@@ -393,9 +409,6 @@
       animationFrameId = requestAnimationFrame(updateDisplay);
     }
 
-    // ----------------------------------------------------
-    // 핵심 타이머 조작 함수들
-    // ----------------------------------------------------
     window.startTimer = function() {
       clearFocus();
       if (!audioCtx) audioCtx = new AudioContext();
@@ -457,9 +470,6 @@
       window.startTimer();
     };
 
-    // ----------------------------------------------------
-    // 부가 기능 (편집, 프리셋, 전체화면, 단축키)
-    // ----------------------------------------------------
     window.enableEditMode = function() {
       if (isRunning || isRemote) return;
       display.style.display = 'none';
@@ -563,13 +573,13 @@
     });
 
     // ----------------------------------------------------
-    // 실시간 동기화 (MQTT 기반 완벽 통신)
+    // 실시간 동기화 (P2P / PeerJS 로직 + TURN 서버)
     // ----------------------------------------------------
     window.openSyncModal = () => {
       clearFocus();
       document.getElementById('sync-modal').style.display = 'flex';
       
-      if (mqttClient && mqttClient.connected && (isHost || isRemote)) {
+      if (peer && !peer.destroyed && (isHost || isRemote)) {
         document.getElementById('sync-options').style.display = 'none';
         document.getElementById('sync-host-ui').style.display = 'none';
         document.getElementById('sync-remote-ui').style.display = 'none';
@@ -588,10 +598,11 @@
     window.closeSyncModal = () => { document.getElementById('sync-modal').style.display = 'none'; };
 
     window.disconnectSync = () => {
-      if (mqttClient) mqttClient.end();
+      if (conn) conn.close();
+      if (peer) peer.destroy();
       isHost = false; isRemote = false;
       currentPin = '';
-      showToast("연결이 해제되었습니다.");
+      showToast("연결이 완전히 해제되었습니다.");
       setTimeout(() => window.location.reload(), 1000);
     };
 
@@ -601,43 +612,36 @@
       setTimeout(() => document.getElementById('sync-pin-input').focus(), 100);
     };
 
-    // [PC 화면] 호스트 생성
     window.createHostSession = () => {
-      if (mqttClient) mqttClient.end();
+      if (peer) { peer.destroy(); }
       currentPin = String(Math.floor(100000 + Math.random() * 900000));
       
       document.getElementById('sync-options').style.display = 'none';
       document.getElementById('sync-host-ui').style.display = 'block';
       document.getElementById('sync-pin-display').innerText = currentPin;
       
-      const topicCmd = TOPIC_PREFIX + currentPin + '/cmd';
+      // 🔥 STUN/TURN 옵션 탑재
+      peer = new Peer(APP_PREFIX + currentPin, PEER_OPTIONS);
 
-      // 무료 공용 브로커 연결
-      mqttClient = mqtt.connect(MQTT_BROKER);
-
-      mqttClient.on('connect', () => {
+      peer.on('open', (id) => {
         isHost = true; isRemote = false;
-        // 리모컨 명령을 받을 채널 구독
-        mqttClient.subscribe(topicCmd);
       });
 
-      mqttClient.on('message', (topic, message) => {
-        if (topic === topicCmd) {
-          const data = JSON.parse(message.toString());
+      peer.on('connection', (connection) => {
+        conn = connection;
+
+        conn.on('open', () => {
+          window.closeSyncModal();
+          const banner = document.getElementById('status-banner');
+          banner.innerText = "📱 모바일 리모컨이 연결되었습니다!";
+          banner.classList.add('show');
+          setTimeout(() => banner.classList.remove('show'), 5000);
           
-          // 리모컨이 처음 접속하여 인사(hello)를 보낼 때
-          if (data.action === 'hello') {
-            window.closeSyncModal();
-            const banner = document.getElementById('status-banner');
-            banner.innerText = "📱 모바일 리모컨이 연결되었습니다!";
-            banner.classList.add('show');
-            setTimeout(() => banner.classList.remove('show'), 5000);
-            
-            // 리모컨에게 현재 화면 상태 즉각 전송
-            syncHostState();
-          } 
-          // 리모컨이 타이머 조작 명령을 보낼 때
-          else {
+          syncHostState();
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'command') {
             if (editInput.style.display === 'block') { window.applyEditMode(); }
             switch(data.action) {
               case 'start': window.startTimer(); break;
@@ -646,15 +650,23 @@
               case 'setAndStart': window.setAndStart(data.payload); break;
             }
           }
-        }
+        });
+
+        conn.on('close', () => {
+          showToast("리모컨 연결이 끊어졌습니다.");
+          conn = null;
+        });
       });
 
-      mqttClient.on('error', (err) => {
-        showToast("서버 접속에 실패했습니다.");
+      peer.on('error', (err) => {
+        if(err.type === 'unavailable-id') window.createHostSession();
+        else {
+          showToast("네트워크 오류가 발생했습니다. (" + err.type + ")");
+          console.error(err);
+        }
       });
     };
 
-    // [모바일] 리모컨 연결
     window.joinRemoteSession = () => {
       const pin = document.getElementById('sync-pin-input').value;
       if (pin.length !== 6) { showToast("6자리 코드를 정확히 입력하세요."); return; }
@@ -663,97 +675,92 @@
       btn.innerText = "연결 중...";
       btn.disabled = true;
 
-      if (mqttClient) mqttClient.end();
+      if (peer) { peer.destroy(); }
       
-      const topicState = TOPIC_PREFIX + pin + '/state';
-      const topicCmd = TOPIC_PREFIX + pin + '/cmd';
+      // 🔥 STUN/TURN 옵션 탑재
+      peer = new Peer(PEER_OPTIONS);
 
-      mqttClient = mqtt.connect(MQTT_BROKER);
+      peer.on('open', () => {
+        // 상대방에게 연결 시도
+        conn = peer.connect(APP_PREFIX + pin, { reliable: true });
 
-      // 7초 타임아웃 방어
-      const connectTimeout = setTimeout(() => {
-        if (!isRemote) {
-          btn.innerText = "연결하기";
-          btn.disabled = false;
-          showToast("연결 시간 초과! 코드가 맞는지 확인하세요.");
-          if (mqttClient) mqttClient.end();
-        }
-      }, 7000);
-
-      mqttClient.on('connect', () => {
-        // PC의 상태를 받을 채널 구독
-        mqttClient.subscribe(topicState);
-        
-        // PC에게 내가 접속했다고 인사(hello) 보내기
-        mqttClient.publish(topicCmd, JSON.stringify({ action: 'hello' }));
-      });
-
-      mqttClient.on('message', (topic, message) => {
-        if (topic === topicState) {
-          const data = JSON.parse(message.toString());
-
-          // PC로부터 첫 응답(상태 데이터)을 받으면 연결 확정
+        // 🔥 무한 로딩 방지 10초 타임아웃
+        const connectTimeout = setTimeout(() => {
           if (!isRemote) {
-            clearTimeout(connectTimeout);
-            isHost = false; isRemote = true; currentPin = pin;
-            window.closeSyncModal();
-            
-            const banner = document.getElementById('status-banner');
-            banner.innerText = "📺 PC 화면 제어 중 (리모컨 모드)";
-            banner.classList.add('remote', 'show');
-            
-            document.getElementById('fullscreen-btn').style.display = 'none';
-            document.getElementById('sync-btn').style.display = 'none';
+            btn.innerText = "연결하기";
+            btn.disabled = false;
+            showToast("연결 시간 초과! 모바일 데이터 연결을 확인하세요.");
+            if (conn) conn.close();
+            if (peer) peer.destroy();
           }
+        }, 10000);
 
-          isRunning = data.isRunning;
-          timeLeftMs = data.timeLeftMs;
-
-          if (isRunning) {
-            targetTime = performance.now() + data.relativeTarget;
-            if (!animationFrameId) animationFrameId = requestAnimationFrame(updateDisplay);
-          } else {
-            cancelAnimationFrame(animationFrameId);
-            animationFrameId = null;
-            display.innerText = formatTime(timeLeftMs);
-            display.style.color = 'rgb(0, 0, 0)';
-          }
+        conn.on('open', () => {
+          clearTimeout(connectTimeout);
+          isHost = false; isRemote = true; currentPin = pin;
+          window.closeSyncModal();
           
-          presetContainer.style.visibility = data.visibilityState;
-        }
+          const banner = document.getElementById('status-banner');
+          banner.innerText = "📺 PC 화면 제어 중 (리모컨 모드)";
+          banner.classList.add('remote', 'show');
+          
+          document.getElementById('fullscreen-btn').style.display = 'none';
+          document.getElementById('sync-btn').style.display = 'none';
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'state') {
+            isRunning = data.isRunning;
+            timeLeftMs = data.timeLeftMs;
+
+            if (isRunning) {
+              targetTime = performance.now() + data.relativeTarget;
+              if (!animationFrameId) animationFrameId = requestAnimationFrame(updateDisplay);
+            } else {
+              cancelAnimationFrame(animationFrameId);
+              animationFrameId = null;
+              display.innerText = formatTime(timeLeftMs);
+              display.style.color = 'rgb(0, 0, 0)';
+            }
+            presetContainer.style.visibility = data.visibilityState;
+          }
+        });
+
+        conn.on('close', () => {
+          showToast("PC와의 연결이 끊어졌습니다.");
+          setTimeout(() => window.location.reload(), 1500); 
+        });
       });
 
-      mqttClient.on('error', (err) => {
+      peer.on('error', (err) => {
         btn.innerText = "연결하기";
         btn.disabled = false;
-        showToast("통신 서버 연결 실패!");
+        if (err.type === 'peer-unavailable') {
+          showToast("존재하지 않거나 만료된 코드입니다.");
+        } else {
+          showToast("연결 실패! (" + err.type + ")");
+        }
       });
     };
 
     function syncHostState() {
-      if (!isHost || !mqttClient || !mqttClient.connected) return;
-      const topicState = TOPIC_PREFIX + currentPin + '/state';
+      if (!isHost || !conn) return;
       const relativeTarget = targetTime ? targetTime - performance.now() : null;
-      
-      // 상태를 채널에 발행(전송)
-      mqttClient.publish(topicState, JSON.stringify({
+      conn.send({
+        type: 'state',
         isRunning, 
         timeLeftMs, 
         relativeTarget,
         visibilityState: presetContainer.style.visibility
-      }));
+      });
     }
 
     function sendRemoteCommand(action, payload = null) {
-      if (!isRemote || !mqttClient || !mqttClient.connected) return;
-      const topicCmd = TOPIC_PREFIX + currentPin + '/cmd';
-      
-      // 명령을 채널에 발행(전송)
-      mqttClient.publish(topicCmd, JSON.stringify({ action, payload }));
+      if (!isRemote || !conn) return;
+      conn.send({ type: 'command', action, payload });
       if (navigator.vibrate) navigator.vibrate(50);
     }
 
-    // 초기 렌더링
     display.innerText = formatTime(timeLeftMs);
   </script>
 </body>
