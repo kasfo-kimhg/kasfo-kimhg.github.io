@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>디지털 타이머</title>
+  <!-- 디지털 시계 폰트 불러오기 -->
+  <link href="https://fonts.cdnfonts.com/css/digital-7-mono" rel="stylesheet">
+  <!-- P2P 통신용 PeerJS -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    /* 전체 페이지 및 리셋 */
+    * { box-sizing: border-box; }
+
+    body, html {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background-color: #ffffff;
+      font-family: 'Malgun Gothic', sans-serif;
+      overflow-x: hidden;
+    }
+
+    #status-banner {
+      position: fixed; top: 0; left: 0; right: 0;
+      background-color: #10b981; color: white;
+      text-align: center; padding: 8px; font-weight: bold;
+      transform: translateY(-100%); transition: transform 0.3s ease;
+      z-index: 200; font-size: 0.9rem;
+    }
+    #status-banner.show { transform: translateY(0); }
+    #status-banner.remote { background-color: #3b82f6; }
+
+    #sync-btn {
+      position: absolute; top: 15px; left: 15px;
+      font-size: 0.9rem; padding: 8px 16px;
+      background-color: #f3f4f6; border: 1px solid #d1d5db;
+      border-radius: 8px; cursor: pointer; z-index: 10;
+    }
+    #sync-btn:hover { background-color: #e5e7eb; }
+
+    #fullscreen-btn {
+      position: absolute; top: 15px; right: 15px;
+      font-size: 0.9rem; padding: 8px 16px; min-height: auto; z-index: 10;
+      background-color: #f3f4f6; border: 1px solid #d1d5db;
+      border-radius: 8px; cursor: pointer;
+    }
+    #fullscreen-btn:hover { background-color: #e5e7eb; }
+
+    .ad-container {
+      position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+      width: 728px; max-width: 90%; height: 90px;
+      background-color: #f8f9fa; border: 2px dashed #ced4da;
+      display: flex; justify-content: center; align-items: center;
+      text-align: center; color: #adb5bd; font-size: 0.9rem; z-index: 5;
+    }
+    :fullscreen .ad-container { display: none !important; }
+    :-webkit-full-screen .ad-container { display: none !important; }
+    :-ms-fullscreen .ad-container { display: none !important; }
+    @media (max-width: 900px) { .ad-container { display: none !important; } }
+
+    #timer-container {
+      width: 100%; height: 100%; max-width: 100%; 
+      display: grid;
+      grid-template-rows: 1fr auto 1fr;
+      align-items: center; justify-items: center;
+      padding: 0 20px;
+    }
+
+    #timer-display-container {
+      grid-row: 2; display: flex;
+      justify-content: center; align-items: center; width: 100%;
+    }
+
+    #timer-display {
+      font-family: 'Digital-7 Mono', monospace;
+      font-size: clamp(4rem, 15vw, 35rem); 
+      font-weight: normal; color: #000000;
+      margin: 0; line-height: 1;
+      cursor: pointer; white-space: nowrap;
+      transition: color 0.1s ease; user-select: none;
+    }
+    #timer-display:hover { opacity: 0.7; }
+
+    #timer-edit-input {
+      font-family: 'Digital-7 Mono', monospace;
+      font-size: clamp(4rem, 15vw, 35rem); 
+      font-weight: normal; color: #000000;
+      background: transparent; border: none;
+      text-align: center; outline: none;
+      width: 100%; margin: 0; line-height: 1;
+    }
+
+    #controls-wrapper { grid-row: 3; width: 100%; height: 100%; position: relative; }
+
+    #controls-container {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; flex-direction: column;
+      align-items: center; padding-top: 4vh;
+    }
+
+    button {
+      padding: 12px 24px; font-size: 1.2rem; cursor: pointer;
+      border: 1px solid #d1d5db; border-radius: 8px;
+      background-color: #f3f4f6; transition: background-color 0.2s;
+      min-height: 48px; touch-action: manipulation; user-select: none;
+    }
+    button:hover { background-color: #e5e7eb; }
+
+    .button-group {
+      display: flex; justify-content: center; gap: 10px;
+      margin-bottom: 30px; flex-wrap: wrap;
+    }
+    #start-btn { background-color: #bfdbfe; border-color: #93c5fd; font-weight: bold; }
+    #start-btn:hover { background-color: #93c5fd; }
+    #stop-btn { background-color: #fecaca; border-color: #fca5a5; }
+    #stop-btn:hover { background-color: #fca5a5; }
+
+    .preset-container { display: flex; flex-direction: column; align-items: center; gap: 20px; width: 100%; }
+    .input-group { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .input-group input {
+      font-size: 16px; padding: 12px; width: 140px;
+      border: 1px solid #9ca3af; border-radius: 8px;
+      text-align: center; height: 48px;
+    }
+    .preset-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; width: 100%; max-width: 600px; }
+    .preset-item { position: relative; display: inline-block; }
+    .preset-item button.preset-btn { padding: 10px 20px; background-color: #ffffff; font-size: 1.1rem; }
+    .preset-item .delete-btn {
+      position: absolute; top: -10px; right: -10px;
+      background-color: #ef4444; color: white; border: none;
+      border-radius: 50%; width: 24px; height: 24px;
+      font-size: 14px; line-height: 24px; text-align: center;
+      cursor: pointer; display: none; padding: 0; min-height: 0;
+    }
+
+    @media (hover: hover) { .preset-item:hover .delete-btn { display: block; } }
+    @media (hover: none) { .preset-item .delete-btn { display: block; } }
+
+    @media (max-width: 480px) {
+      .button-group button { flex: 1; min-width: 80px; font-size: 1rem; }
+      .input-group input { width: 120px; }
+      .preset-item button.preset-btn { padding: 12px 16px; font-size: 1rem; }
+      #fullscreen-btn, #sync-btn { top: 10px; font-size: 0.8rem; padding: 6px 12px; }
+      #sync-btn { left: 10px; } #fullscreen-btn { right: 10px; }
+    }
+
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); display: flex;
+      justify-content: center; align-items: center; z-index: 1000;
+    }
+    .modal-content {
+      background: white; padding: 30px; border-radius: 16px;
+      text-align: center; width: 90%; max-width: 380px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+    }
+    .modal-content h3 { margin-top: 0; font-size: 1.5rem; margin-bottom: 20px; }
+    .sync-opt-btn {
+      width: 100%; margin-bottom: 15px; padding: 15px;
+      background-color: #eff6ff; border: 1px solid #bfdbfe;
+      color: #1e3a8a; font-weight: bold; border-radius: 8px;
+    }
+    .sync-opt-btn:hover { background-color: #dbeafe; }
+    #sync-pin-display {
+      font-size: 3rem; letter-spacing: 5px; color: #1f2937;
+      background: #f3f4f6; padding: 10px; border-radius: 8px; margin: 20px 0;
+    }
+    .sync-input {
+      font-size: 2rem; width: 100%; text-align: center;
+      letter-spacing: 5px; padding: 10px; border: 2px solid #d1d5db;
+      border-radius: 8px; margin: 20px 0; outline: none;
+    }
+    .sync-input:focus { border-color: #3b82f6; }
+    .close-btn { background-color: #f3f4f6; color: #4b5563; border: none; width: 100%; margin-top: 10px; }
+
+    #toast {
+      position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.8); color: white; padding: 12px 24px;
+      border-radius: 30px; font-size: 0.9rem; z-index: 2000;
+      opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <div id="status-banner">기기와 연결되었습니다!</div>
+  <div id="toast">알림 메시지</div>
+
+  <button id="sync-btn" onclick="openSyncModal()">📱 기기 연동</button>
+  <button id="fullscreen-btn" onclick="toggleFullScreen()">전체화면</button>
+
+  <div class="ad-container">
+    <div>
+      구글 광고 영역 (가로형)<br>(728x90 등)<br>
+      <!-- 
+        ★ 여기에 구글 애드센스 코드를 붙여넣으세요 ★ 
+        <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXX" crossorigin="anonymous"></script>
+        <ins class="adsbygoogle" style="display:inline-block;width:728px;height:90px" data-ad-client="ca-pub-XXXXXXXXXX" data-ad-slot="XXXXXXX"></ins>
+        <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+      -->
+    </div>
+  </div>
+
+  <div id="timer-container">
+    <div id="timer-display-container">
+      <div id="timer-display" onclick="enableEditMode()" title="클릭하여 초 단위 직접 입력">- 00:00:00</div>
+      <input type="number" id="timer-edit-input" style="display: none;" onblur="applyEditMode()" onkeydown="handleEditKey(event)" min="0">
+    </div>
+
+    <div id="controls-wrapper">
+      <div id="controls-container">
+        <div class="button-group">
+          <button id="start-btn" onclick="startTimer()">시작</button>
+          <button id="stop-btn" onclick="stopTimer()">정지</button>
+          <button onclick="resetTimer()">초기화</button>
+        </div>
+
+        <div class="preset-container" id="preset-container">
+          <div class="input-group">
+            <input type="number" id="custom-seconds" placeholder="초 단위 입력" min="1" onkeydown="handlePresetKey(event)">
+            <button onclick="addPreset()">+</button>
+          </div>
+          <div id="preset-list" class="preset-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sync-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <h3>📱 기기 연동 (OTP)</h3>
+      <div id="sync-options">
+        <p style="font-size:0.9rem; color:#666; margin-bottom:20px;">타이머를 제어할 방식을 선택하세요.</p>
+        <button class="sync-opt-btn" onclick="createHostSession()">💻 PC 화면 (제어받기)</button>
+        <button class="sync-opt-btn" onclick="showRemoteInput()">📱 모바일 (리모컨 쓰기)</button>
+      </div>
+
+      <div id="sync-host-ui" style="display: none;">
+        <p>휴대폰에서 연동 버튼을 누르고<br>아래 6자리 코드를 입력하세요.</p>
+        <div id="sync-pin-display">------</div>
+        <p style="font-size: 0.9rem; color: #2563eb; font-weight: bold;">연결 대기 중...</p>
+      </div>
+
+      <div id="sync-remote-ui" style="display: none;">
+        <p>PC 화면에 표시된 6자리 코드를<br>정확하게 입력하세요.</p>
+        <input type="text" inputmode="numeric" pattern="[0-9]*" id="sync-pin-input" class="sync-input" placeholder="123456" maxlength="6" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0,6);">
+        <button class="sync-opt-btn" style="background-color: #10b981; color: white; border-color: #059669;" id="connect-btn" onclick="joinRemoteSession()">연결하기</button>
+      </div>
+
+      <div id="sync-connected-ui" style="display: none;">
+        <p id="sync-connected-status" style="margin-bottom: 20px; font-weight: bold; color: #1e3a8a;"></p>
+        <button class="sync-opt-btn" style="background-color: #ef4444; color: white; border-color: #dc2626;" onclick="disconnectSync()">연결 해제하기</button>
+      </div>
+
+      <button class="close-btn" onclick="closeSyncModal()">취소 및 닫기</button>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------------------------------------
+    // 전역 변수 및 유틸리티
+    // ----------------------------------------------------
+    const display = document.getElementById('timer-display');
+    const editInput = document.getElementById('timer-edit-input');
+    const presetContainer = document.getElementById('preset-container');
+    
+    let targetTime = null;
+    let animationFrameId = null;
+    let isRunning = false;
+    let timeLeftMs = 0;
+    let hasTriggeredZero = false; // 0초 도달 시 1회만 알람을 울리기 위한 플래그
+    
+    let wakeLock = null;
+
+    // P2P 연동 (PeerJS)
+    let peer = null;
+    let conn = null;
+    let isHost = false;
+    let isRemote = false;
+    let currentPin = '';
+    const APP_PREFIX = 'my-web-timer-v1-'; 
+
+    function clearFocus() {
+      if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
+        document.activeElement.blur();
+      }
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator && !wakeLock) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (err) { console.warn('Wake Lock error:', err); }
+    }
+    function releaseWakeLock() {
+      if (wakeLock !== null) {
+        wakeLock.release().then(() => { wakeLock = null; });
+      }
+    }
+
+    // ----------------------------------------------------
+    // 정각 알람(Beep) 기능 탑재 (외부 오디오 파일 불필요)
+    // ----------------------------------------------------
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+
+    function playBeep() {
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5 음
+      
+      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+      
+      oscillator.start(audioCtx.currentTime);
+      oscillator.stop(audioCtx.currentTime + 0.5);
+    }
+
+    // ----------------------------------------------------
+    // 백그라운드 잠들기 방지용 Web Worker 생성
+    // ----------------------------------------------------
+    const workerBlob = new Blob([`
+      let interval = null;
+      self.onmessage = function(e) {
+        if (e.data === 'start') {
+          if(!interval) interval = setInterval(() => postMessage('tick'), 100);
+        } else if (e.data === 'stop') {
+          clearInterval(interval);
+          interval = null;
+        }
+      };
+    `], { type: 'application/javascript' });
+    const timerWorker = new Worker(URL.createObjectURL(workerBlob));
+
+    // 워커가 0.1초마다 보내는 신호를 받아 백그라운드에서도 정확한 0초 감지
+    timerWorker.onmessage = function(e) {
+      if (e.data === 'tick' && isRunning && targetTime) {
+        // 🔥 절대 시간인 performance.now() 사용
+        const diff = targetTime - performance.now();
+        if (diff <= 0 && !hasTriggeredZero) {
+          hasTriggeredZero = true; // 중복 울림 방지
+          playBeep(); // 0초 도달 시 즉각 알람
+        }
+      }
+    };
+
+    // ----------------------------------------------------
+    // 타이머 렌더링 로직
+    // ----------------------------------------------------
+    function formatTime(diffMs) {
+      const isOvertime = diffMs < 0;
+      let displaySeconds = isOvertime ? Math.floor(Math.abs(diffMs) / 1000) : Math.ceil(diffMs / 1000);
+      const h = String(Math.floor(displaySeconds / 3600)).padStart(2, '0');
+      const m = String(Math.floor((displaySeconds % 3600) / 60)).padStart(2, '0');
+      const s = String(displaySeconds % 60).padStart(2, '0');
+      return `${isOvertime ? '+' : '-'} ${h}:${m}:${s}`;
+    }
+
+    function updateDisplay() {
+      if (!isRunning) return;
+
+      // 🔥 성능과 정확성을 보장하는 고해상도 타이머 사용
+      const diff = targetTime - performance.now();
+      timeLeftMs = diff;
+      display.innerText = formatTime(diff);
+
+      const isOvertime = diff < 0;
+      const displaySeconds = isOvertime ? Math.floor(Math.abs(diff) / 1000) : Math.ceil(diff / 1000);
+
+      if (isOvertime && displaySeconds > 0) {
+        display.style.color = 'rgb(0, 0, 255)';
+      } else if (!isOvertime && displaySeconds > 0 && displaySeconds <= 5) {
+        const redValue = 255 - ((displaySeconds - 1) * 51);
+        display.style.color = `rgb(${redValue}, 0, 0)`;
+      } else {
+        display.style.color = 'rgb(0, 0, 0)';
+      }
+
+      animationFrameId = requestAnimationFrame(updateDisplay);
+    }
+
+    // ----------------------------------------------------
+    // 핵심 타이머 조작 함수들
+    // ----------------------------------------------------
+    window.startTimer = function() {
+      clearFocus();
+      // 브라우저 오디오 권한 획득을 위해 첫 클릭 시 컨텍스트 초기화
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      if (isRunning) return;
+      if (isRemote) { sendRemoteCommand('start'); return; }
+
+      isRunning = true;
+      if (timeLeftMs > 0) hasTriggeredZero = false; // 0초 초과 상태일때만 알람 리셋
+      
+      presetContainer.style.visibility = 'hidden';
+      // 🔥 절대 시간 설정
+      targetTime = performance.now() + timeLeftMs;
+      
+      requestWakeLock();
+      timerWorker.postMessage('start'); // 워커 시작
+      animationFrameId = requestAnimationFrame(updateDisplay);
+      
+      if (isHost) syncHostState();
+    };
+
+    window.stopTimer = function() {
+      clearFocus();
+      if (!isRunning) return;
+      if (isRemote) { sendRemoteCommand('stop'); return; }
+
+      isRunning = false;
+      cancelAnimationFrame(animationFrameId);
+      timerWorker.postMessage('stop'); // 워커 중지
+      releaseWakeLock(); 
+      
+      if (isHost) syncHostState();
+    };
+
+    window.resetTimer = function() {
+      clearFocus();
+      if (isRemote) { sendRemoteCommand('reset'); return; }
+
+      window.stopTimer();
+      timeLeftMs = 0;
+      hasTriggeredZero = false;
+      display.innerText = formatTime(timeLeftMs);
+      display.style.color = 'rgb(0, 0, 0)';
+      editInput.style.display = 'none';
+      display.style.display = 'block';
+      presetContainer.style.visibility = 'visible';
+      
+      if (isHost) syncHostState();
+    };
+
+    window.setAndStart = function(seconds) {
+      clearFocus();
+      if (isRemote) { sendRemoteCommand('setAndStart', seconds); return; }
+
+      window.stopTimer();
+      timeLeftMs = seconds * 1000;
+      display.innerText = formatTime(timeLeftMs);
+      display.style.color = 'rgb(0, 0, 0)';
+      window.startTimer();
+    };
+
+    // ----------------------------------------------------
+    // 부가 기능 (편집, 프리셋, 전체화면, 단축키)
+    // ----------------------------------------------------
+    window.enableEditMode = function() {
+      if (isRunning || isRemote) return;
+      display.style.display = 'none';
+      editInput.style.display = 'block';
+      editInput.value = Math.max(0, Math.ceil(timeLeftMs / 1000));
+      editInput.focus();
+      editInput.select();
+    };
+
+    window.applyEditMode = function() {
+      if (editInput.style.display !== 'block') return; 
+      let val = parseInt(editInput.value, 10);
+      if (isNaN(val) || val < 0) val = 0;
+      timeLeftMs = val * 1000;
+      display.innerText = formatTime(timeLeftMs);
+      display.style.color = 'rgb(0, 0, 0)';
+      editInput.style.display = 'none';
+      display.style.display = 'block';
+      if (isHost) syncHostState();
+    };
+
+    window.handleEditKey = (e) => {
+      if (e.key === 'Enter') window.applyEditMode();
+      else if (e.key === 'Escape') e.target.blur();
+    };
+
+    window.addPreset = function() {
+      clearFocus();
+      const inputEl = document.getElementById('custom-seconds');
+      const seconds = parseInt(inputEl.value, 10);
+      if (isNaN(seconds) || seconds <= 0) return;
+      
+      const list = document.getElementById('preset-list');
+      const wrapper = document.createElement('div');
+      wrapper.className = 'preset-item';
+      
+      let btnText = seconds >= 60 ? `${Math.floor(seconds / 60)}분 ${seconds % 60 > 0 ? (seconds % 60) + '초' : ''}` : `${seconds}초`;
+      
+      const btn = document.createElement('button');
+      btn.className = 'preset-btn';
+      btn.innerText = btnText;
+      btn.onclick = () => window.setAndStart(seconds);
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-btn';
+      deleteBtn.innerText = 'x';
+      deleteBtn.onclick = (e) => { e.stopPropagation(); list.removeChild(wrapper); };
+
+      wrapper.appendChild(btn); wrapper.appendChild(deleteBtn);
+      list.appendChild(wrapper);
+      inputEl.value = '';
+    };
+
+    window.handlePresetKey = (e) => {
+      if (e.key === 'Enter') window.addPreset();
+      else if (e.key === 'Escape') e.target.blur();
+    };
+
+    window.toggleFullScreen = function() {
+      clearFocus();
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().then(() => {
+          if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock(['Escape']).catch(()=>{});
+        }).catch(()=>{});
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+      }
+    };
+
+    document.addEventListener('keydown', (e) => {
+      if (document.activeElement.tagName === 'INPUT') return;
+      
+      const syncModal = document.getElementById('sync-modal');
+      if (syncModal.style.display !== 'none') {
+        if (e.key === 'Escape') { e.preventDefault(); window.closeSyncModal(); }
+        return; 
+      }
+      
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (document.fullscreenElement) {
+          if (isRunning) window.resetTimer();
+          else { window.resetTimer(); if(document.exitFullscreen) document.exitFullscreen(); }
+        } else {
+          window.resetTimer();
+        }
+        return;
+      }
+      
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        if (isRunning) window.stopTimer(); else window.startTimer();
+        return;
+      }
+      
+      const key = parseInt(e.key, 10);
+      if (key >= 1 && key <= 9) {
+        const presetBtns = document.querySelectorAll('#preset-list .preset-btn');
+        if (presetBtns[key - 1]) presetBtns[key - 1].click();
+      }
+    });
+
+    // ----------------------------------------------------
+    // 실시간 동기화 (P2P / PeerJS 로직)
+    // ----------------------------------------------------
+    window.openSyncModal = () => {
+      clearFocus();
+      document.getElementById('sync-modal').style.display = 'flex';
+      
+      if (peer && !peer.destroyed && (isHost || isRemote)) {
+        document.getElementById('sync-options').style.display = 'none';
+        document.getElementById('sync-host-ui').style.display = 'none';
+        document.getElementById('sync-remote-ui').style.display = 'none';
+        document.getElementById('sync-connected-ui').style.display = 'block';
+        
+        let statusTxt = isHost ? `💻 PC 화면(호스트)으로 대기 중입니다.<br><br><span style="font-size:2rem; letter-spacing:5px; background:#f3f4f6; padding:10px; border-radius:8px;">${currentPin}</span>` : `📱 리모컨 모드로 연결되어 있습니다.`;
+        document.getElementById('sync-connected-status').innerHTML = statusTxt;
+      } else {
+        document.getElementById('sync-options').style.display = 'block';
+        document.getElementById('sync-host-ui').style.display = 'none';
+        document.getElementById('sync-remote-ui').style.display = 'none';
+        document.getElementById('sync-connected-ui').style.display = 'none';
+      }
+    };
+
+    window.closeSyncModal = () => { document.getElementById('sync-modal').style.display = 'none'; };
+
+    window.disconnectSync = () => {
+      if (conn) conn.close();
+      if (peer) peer.destroy();
+      isHost = false; isRemote = false;
+      currentPin = '';
+      showToast("연결이 완전히 해제되었습니다.");
+      setTimeout(() => window.location.reload(), 1000);
+    };
+
+    window.showRemoteInput = () => {
+      document.getElementById('sync-options').style.display = 'none';
+      document.getElementById('sync-remote-ui').style.display = 'block';
+      setTimeout(() => document.getElementById('sync-pin-input').focus(), 100);
+    };
+
+    window.createHostSession = () => {
+      if (peer) { peer.destroy(); }
+      currentPin = String(Math.floor(100000 + Math.random() * 900000));
+      
+      document.getElementById('sync-options').style.display = 'none';
+      document.getElementById('sync-host-ui').style.display = 'block';
+      document.getElementById('sync-pin-display').innerText = currentPin;
+      
+      peer = new Peer(APP_PREFIX + currentPin);
+
+      peer.on('open', (id) => {
+        isHost = true; isRemote = false;
+      });
+
+      peer.on('connection', (connection) => {
+        conn = connection;
+
+        conn.on('open', () => {
+          window.closeSyncModal();
+          const banner = document.getElementById('status-banner');
+          banner.innerText = "📱 모바일 리모컨이 연결되었습니다!";
+          banner.classList.add('show');
+          setTimeout(() => banner.classList.remove('show'), 5000);
+          
+          syncHostState();
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'command') {
+            if (editInput.style.display === 'block') { window.applyEditMode(); }
+            
+            switch(data.action) {
+              case 'start': window.startTimer(); break;
+              case 'stop': window.stopTimer(); break;
+              case 'reset': window.resetTimer(); break;
+              case 'setAndStart': window.setAndStart(data.payload); break;
+            }
+          }
+        });
+
+        conn.on('close', () => {
+          showToast("리모컨 연결이 끊어졌습니다.");
+          conn = null;
+        });
+      });
+
+      peer.on('error', (err) => {
+        if(err.type === 'unavailable-id') window.createHostSession();
+        else showToast("네트워크 오류가 발생했습니다.");
+      });
+    };
+
+    window.joinRemoteSession = () => {
+      const pin = document.getElementById('sync-pin-input').value;
+      if (pin.length !== 6) { showToast("6자리 코드를 정확히 입력하세요."); return; }
+      
+      const btn = document.getElementById('connect-btn');
+      btn.innerText = "연결 중...";
+      btn.disabled = true;
+
+      if (peer) { peer.destroy(); }
+      peer = new Peer();
+
+      peer.on('open', () => {
+        conn = peer.connect(APP_PREFIX + pin);
+
+        conn.on('open', () => {
+          isHost = false; isRemote = true; currentPin = pin;
+          window.closeSyncModal();
+          
+          const banner = document.getElementById('status-banner');
+          banner.innerText = "📺 PC 화면 제어 중 (리모컨 모드)";
+          banner.classList.add('remote', 'show');
+          
+          document.getElementById('fullscreen-btn').style.display = 'none';
+          document.getElementById('sync-btn').style.display = 'none';
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'state') {
+            isRunning = data.isRunning;
+            timeLeftMs = data.timeLeftMs;
+
+            if (isRunning) {
+              // 🔥 상대 시간(relativeTarget)을 전송받아 자신의 performance.now()와 결합!
+              // 기기 간의 시간이 전혀 달라도 완벽하게 동일한 시간을 표시합니다.
+              targetTime = performance.now() + data.relativeTarget;
+              if (!animationFrameId) animationFrameId = requestAnimationFrame(updateDisplay);
+            } else {
+              cancelAnimationFrame(animationFrameId);
+              animationFrameId = null;
+              display.innerText = formatTime(timeLeftMs);
+              display.style.color = 'rgb(0, 0, 0)';
+            }
+            
+            presetContainer.style.visibility = data.visibilityState;
+          }
+        });
+
+        conn.on('close', () => {
+          showToast("PC와의 연결이 끊어졌습니다.");
+          setTimeout(() => window.location.reload(), 1500); 
+        });
+      });
+
+      peer.on('error', (err) => {
+        btn.innerText = "연결하기";
+        btn.disabled = false;
+        showToast("연결 실패! 코드를 다시 확인하세요.");
+      });
+    };
+
+    function syncHostState() {
+      if (!isHost || !conn) return;
+      // 절대 시간이 아닌, '얼마나 남았는가'의 순수 차이값만 전송
+      const relativeTarget = targetTime ? targetTime - performance.now() : null;
+      conn.send({
+        type: 'state',
+        isRunning, 
+        timeLeftMs, 
+        relativeTarget,
+        visibilityState: presetContainer.style.visibility
+      });
+    }
+
+    function sendRemoteCommand(action, payload = null) {
+      if (!isRemote || !conn) return;
+      conn.send({ type: 'command', action, payload });
+      if (navigator.vibrate) navigator.vibrate(50);
+    }
+
+    // 초기 렌더링
+    display.innerText = formatTime(timeLeftMs);
+  </script>
+</body>
+</html>
